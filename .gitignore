@@ -71,4 +71,4 @@ config*.local.json
 # YAML config files (to avoid committing secrets)
 *.yaml
 *.yml
-!config.yaml.example
+!config-example.yaml

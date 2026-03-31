@@ -74,7 +74,13 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-1. Configure your runtime config file (see Configuration section).
+1. Copy the example config file and fill in your actual values:
+
+```bash
+cp config-example.yaml config.yaml
+# Edit config.yaml and replace all YOUR_XXX placeholders with actual values
+```
+
 2. Optionally point AGENT_CONFIG to your config path.
 3. Start the service.
 

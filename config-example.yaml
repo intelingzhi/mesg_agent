@@ -1,0 +1,45 @@
+# AI Agent 配置文件
+# 用于配置消息平台连接、模型参数、记忆系统等
+# 使用前请复制此文件为 config.yaml 并填写实际配置值
+
+# 管理员 ID 列表，debounce判断是否回这个人的信息
+owner_ids:
+  - "YOUR_USER_ID_1"
+  - "YOUR_USER_ID_2"
+
+# 工作空间路径
+workspace: "./workspace"
+
+# 监听端口
+port: 8080
+
+# 消息防抖间隔（秒）
+debounce_seconds: 3.0
+
+# 消息平台配置
+message:
+  api_url: "YOUR_MESSAGE_API_URL"
+
+
+# 模型配置
+models:
+  default: "YOUR_PROVIDER_NAME"
+  providers:
+    YOUR_PROVIDER_NAME:
+      api_base: "YOUR_LLM_API_BASE"
+      api_key: "YOUR_LLM_API_KEY"
+      model: "YOUR_MODEL_NAME"
+      max_tokens: 8192
+      timeout: 120
+      extra_body: {}
+
+# 记忆系统配置
+memory:
+  enabled: true
+  embedding_api:
+    api_base: "YOUR_EMBEDDING_API_BASE"
+    api_key: "YOUR_EMBEDDING_API_KEY"
+    model: "YOUR_EMBEDDING_MODEL"
+    dimension: 1024
+  retrieve_top_k: 5
+  similarity_threshold: 0.92

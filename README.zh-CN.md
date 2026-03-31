@@ -72,7 +72,13 @@ pip install -r requirements.txt
 
 ## 快速开始
 
-1. 准备配置文件（参考下文配置说明）。
+1. 复制示例配置文件并填写实际配置值：
+
+```bash
+cp config-example.yaml config.yaml
+# 编辑 config.yaml，将所有 YOUR_XXX 替换为实际值
+```
+
 2. 可选：通过环境变量指定配置路径。
 3. 启动服务。
 
