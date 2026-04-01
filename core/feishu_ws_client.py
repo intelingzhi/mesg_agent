@@ -21,10 +21,14 @@ except ImportError:
     logger.warning("[feishu_ws_client] lark-oapi SDK 未安装，请运行: pip install lark-oapi")
 
 import core.feishu_handler as feishu_handler
+import core.llm as llm
 
 _cli = None
 _running = False
 _reconnect_delay = 10  # 重连间隔（秒）
+_processed_messages = {}  # 已处理消息ID字典：{message_id: timestamp}
+_message_lock = threading.Lock()  # 线程锁
+_dedup_ttl = 3600  # 去重TTL：1小时
 
 
 def init(config: dict):
@@ -110,28 +114,73 @@ def _run_ws_loop(app_id: str, app_secret: str):
 
 def _on_message_receive(data: im.v1.P2ImMessageReceiveV1) -> None:
     """
-    消息接收事件处理器
+    消息接收事件处理器（异步处理，3秒内立即返回）
 
     Args:
         data: 飞书 P2ImMessageReceiveV1 事件数据
     """
+    global _processed_messages
+
     try:
+        # 获取消息ID用于去重
+        message_id = data.event.message.message_id
+
+        # 线程安全检查消息是否已处理
+        with _message_lock:
+            now = time.time()
+
+            # 清理过期记录
+            expired = [mid for mid, ts in _processed_messages.items() if now - ts > _dedup_ttl]
+            for mid in expired:
+                del _processed_messages[mid]
+
+            # 检查是否已处理
+            if message_id in _processed_messages:
+                logger.info(f"[feishu_ws_client] 消息已处理，跳过: {message_id}")
+                return
+
+            # 记录处理时间
+            _processed_messages[message_id] = now
+
         # 将 SDK 事件转换为 feishu_handler 期望的格式
         event = _convert_to_event_format(data)
-        logger.info(f"[feishu_ws_client] 收到消息事件: {event}")
 
         # 解析事件
         open_id, text, chat_type = feishu_handler.parse_event(event)
 
-        # MVP-2：仅控制台输出，不回复
-        logger.info(f"[feishu_ws_client] 解析成功: open_id={open_id}, chat_type={chat_type}, text={text[:50]}...")
         logger.info(f"[feishu_ws_client] 💬 收到消息: {text}")
+
+        # 后台线程异步处理 LLM，避免阻塞导致飞书重推
+        thread = threading.Thread(
+            target=_process_message_async,
+            args=(open_id, text, chat_type),
+            daemon=True
+        )
+        thread.start()
 
     except ValueError as e:
         # 解析失败（如不支持的事件类型、自己发送的消息等）
         logger.info(f"[feishu_ws_client] 消息过滤: {e}")
     except Exception as e:
         logger.error(f"[feishu_ws_client] 处理消息事件失败: {e}")
+
+
+def _process_message_async(open_id: str, text: str, chat_type: str):
+    """
+    后台线程异步处理消息（调用 LLM）
+
+    Args:
+        open_id: 发送者 open_id
+        text: 消息文本
+        chat_type: 聊天类型
+    """
+    try:
+        # 调用 LLM 生成回复（使用 dm_{open_id} 作为 session_id 保持上下文）
+        session_key = f"dm_{open_id}"
+        reply = llm.chat(text, session_key)
+        logger.info(f"[feishu_ws_client] 🤖 LLM 回复: {reply}")
+    except Exception as e:
+        logger.error(f"[feishu_ws_client] 异步处理消息失败: {e}")
 
 
 def _convert_to_event_format(data: im.v1.P2ImMessageReceiveV1) -> dict:
