@@ -1,245 +1,360 @@
-# 飞书（Feishu/Lark）集成实现计划
+# 飞书（Feishu/Lark）集成实施计划
 
-**版本**: v1.0  
+**版本**: v2.0  
 **日期**: 2026-04-01  
-**状态**: 设计阶段  
+**状态**: 规划中  
 
 ---
 
-## 阶段划分原则
+## 1. 实施原则
 
-1. **由底向上**：先基础设施，后业务逻辑
-2. **独立可测**：每个阶段都有独立的测试验证点
-3. **最小可用**：每个阶段结束都有可运行的状态
-4. **风险前置**：技术风险高的模块先做验证
+1. **MVP优先**：每个阶段都有可验证的产出
+2. **小步快跑**：每个阶段代码量可控，便于Review
+3. **统一格式**：Webhook和WebSocket使用相同的消息格式
+4. **异常中断**：调用失败直接抛出异常，方便Debug
+5. **详细日志**：所有关键节点都记录日志
 
 ---
 
-## 阶段一：飞书 Messenger 发送模块
+## 2. 阶段规划
 
-### 目标
-实现消息发送功能，能够主动向飞书用户发送文本消息。
+### MVP-0：适配飞书格式，Postman→Webhook→Console
 
-### 交付物
-- `core/feishu_messenger.py` - 飞书消息发送器
-- `tests/test_feishu_messenger.py` - 单元测试
+#### 目标
+修改现有代码，使Webhook能够接收完整的飞书事件格式，解析后输出到控制台。
 
-### 测试方案
+#### 涉及文件
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `core/feishu_handler.py` | 新增 | 飞书消息解析与处理入口 |
+| `core/webhook_server.py` | 修改 | 接收飞书格式JSON，调用handler |
+| `core/message.py` | 修改 | 使用logger输出到控制台 |
 
-| 测试类型 | 测试内容 | 验证方式 |
-|---------|---------|---------|
-| 单元测试 | 构造发送请求 | Mock飞书API，验证请求参数正确 |
-| 集成测试 | 真实发送消息 | 配置测试应用，向指定用户发送测试消息 |
-| 边界测试 | 超长消息、特殊字符 | 验证消息拆分和编码处理 |
-
-### 测试命令
-```bash
-# 单元测试
-python -m pytest tests/test_feishu_messenger.py -v
-
-# 集成测试（需要配置测试凭证）
-export FEISHU_TEST_APP_ID="cli_xxx"
-export FEISHU_TEST_APP_SECRET="xxx"
-export FEISHU_TEST_USER_ID="ou_xxx"
-python -m pytest tests/test_feishu_messenger.py::test_send_real_message -v
+#### 核心逻辑
+```
+Postman ──POST /webhook──→ webhook_server.py
+                                ↓
+                        feishu_handler.parse_event() (解析飞书格式)
+                                ↓
+                        feishu_handler.handle_message() (提取open_id, text)
+                                ↓
+                        debounce → llm.chat()
+                                ↓
+                        message.send_text() → logger.info()
 ```
 
----
+#### Postman测试请求
+```json
+POST http://localhost:8080/webhook
+Content-Type: application/json
 
-## 阶段二：Message 路由层改造
-
-### 目标
-改造 `message.py`，支持根据配置路由到不同平台的发送器。
-
-### 交付物
-- 修改 `core/message.py` - 添加平台路由逻辑
-- `tests/test_message_router.py` - 路由层测试
-
-### 测试方案
-
-| 测试类型 | 测试内容 | 验证方式 |
-|---------|---------|---------|
-| 单元测试 | 配置为feishu时路由正确 | Mock feishu_messenger，验证调用 |
-| 单元测试 | 配置为未知平台时行为 | 验证日志警告和返回False |
-| 兼容性测试 | 现有代码调用方式不变 | 验证debounce等模块无需修改 |
-
-### 测试命令
-```bash
-python -m pytest tests/test_message_router.py -v
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "test_001",
+    "event_type": "im.message.receive_v1",
+    "create_time": "1234567890"
+  },
+  "event": {
+    "message": {
+      "message_id": "om_test_001",
+      "chat_type": "p2p",
+      "message_type": "text",
+      "content": "{\"text\":\"你好\"}",
+      "sender": {
+        "sender_id": {
+          "open_id": "ou_xxxxxxxxxxxxxxxx"
+        },
+        "sender_type": "user"
+      }
+    }
+  }
+}
 ```
 
----
+#### 验证标准
+- [ ] Postman发送后返回HTTP 200
+- [ ] 控制台能看到解析后的open_id和text
+- [ ] 能看到LLM生成的回复内容
+- [ ] 异常时抛出明确错误信息
 
-## 阶段三：飞书 Client 接收模块
-
-### 目标
-实现WebSocket客户端，能够接收飞书消息并解析。
-
-### 交付物
-- `core/feishu_client.py` - WebSocket客户端
-- `tests/test_feishu_client.py` - 单元测试
-- `tests/test_feishu_integration.py` - 集成测试
-
-### 测试方案
-
-| 测试类型 | 测试内容 | 验证方式 |
-|---------|---------|---------|
-| 单元测试 | 消息解析逻辑 | 构造飞书事件JSON，验证解析结果 |
-| 单元测试 | 自消息过滤 | 构造sender_type=app的消息，验证被过滤 |
-| 单元测试 | 群聊@检测 | 构造群聊消息，验证@检测逻辑 |
-| 集成测试 | WebSocket连接建立 | 使用测试应用，验证能接收真实消息 |
-| 集成测试 | 消息流转完整链路 | 发送消息→Agent处理→回复接收 |
-
-### 测试命令
-```bash
-# 单元测试
-python -m pytest tests/test_feishu_client.py -v
-
-# 集成测试（需要配置测试凭证）
-export FEISHU_TEST_APP_ID="cli_xxx"
-export FEISHU_TEST_APP_SECRET="xxx"
-python -m pytest tests/test_feishu_integration.py -v
-```
-
----
-
-## 阶段四：Main 入口整合
-
-### 目标
-整合所有模块，调整启动流程，支持graceful shutdown。
-
-### 交付物
-- 修改 `main.py` - 调整初始化和启动流程
-- 修改 `requirements.txt` - 添加依赖
-- 修改 `config-example.yaml` - 添加飞书配置示例
-- `tests/test_main_integration.py` - 集成测试
-
-### 测试方案
-
-| 测试类型 | 测试内容 | 验证方式 |
-|---------|---------|---------|
-| 启动测试 | 配置为feishu时正常启动 | 验证无异常，WebSocket连接建立 |
-| 启动测试 | HTTP健康检查端口正常 | curl http://localhost:8080/ 返回ok |
-| 关闭测试 | Ctrl+C优雅关闭 | 验证WebSocket连接正常关闭 |
-| 端到端测试 | 完整消息流转 | 飞书发送→Agent处理→飞书接收 |
-
-### 测试命令
-```bash
-# 启动服务测试
-python main.py &
-sleep 3
-curl http://localhost:8080/
-kill %1
-
-# 端到端测试（需要完整配置）
-python -m pytest tests/test_main_integration.py -v
-```
-
----
-
-## 阶段五：端到端验收测试
-
-### 目标
-完整验证飞书集成功能，编写使用文档。
-
-### 交付物
-- `tests/test_e2e_feishu.py` - 端到端测试
-- `doc/FEISHU_SETUP_GUIDE.md` - 飞书配置指南
-- 更新 `README.md` - 添加飞书集成说明
-
-### 测试方案
-
-| 测试类型 | 测试内容 | 验证方式 |
-|---------|---------|---------|
-| 私聊测试 | 用户私聊Agent | 验证能接收消息并回复 |
-| 群聊测试 | 群聊@Agent | 验证能接收@消息并回复 |
-| 并发测试 | 多用户同时发送 | 验证消息不丢失、不混淆 |
-| 长连接测试 | 运行24小时 | 验证连接稳定，自动重连正常 |
-
-### 测试命令
-```bash
-# 端到端测试
-python -m pytest tests/test_e2e_feishu.py -v
-
-# 长连接稳定性测试（后台运行）
-python tests/stress_test.py --duration=86400
-```
-
----
-
-## 阶段依赖关系
-
-```
-阶段一：Messenger发送模块
-    ↓
-阶段二：Message路由层改造
-    ↓
-阶段三：Client接收模块
-    ↓
-阶段四：Main入口整合
-    ↓
-阶段五：端到端验收测试
-```
-
----
-
-## 各阶段时间预估
-
-| 阶段 | 预估工作量 | 关键风险 |
-|------|-----------|---------|
-| 阶段一 | 1-2小时 | 飞书API调用方式 |
-| 阶段二 | 1小时 | 保持向后兼容 |
-| 阶段三 | 2-3小时 | WebSocket连接稳定性 |
-| 阶段四 | 1-2小时 | 启动流程协调 |
-| 阶段五 | 2-3小时 | 端到端环境问题 |
-
----
-
-## 测试环境需求
-
-每个阶段都需要以下测试环境：
-
-1. **飞书测试应用**
-   - App ID 和 App Secret
-   - 已开通必要权限
-   - 已发布并通过审核
-
-2. **测试用户**
-   - 至少一个测试用户的 open_id
-   - 测试用户已添加测试应用为好友
-
-3. **网络环境**
-   - 能访问飞书开放平台（open.feishu.cn）
-   - 出向443端口开放
-
----
-
-## 文件变更总览
-
-| 阶段 | 新增文件 | 修改文件 | 删除文件 |
-|------|---------|---------|---------|
-| 阶段一 | `core/feishu_messenger.py`<br>`tests/test_feishu_messenger.py` | - | - |
-| 阶段二 | `tests/test_message_router.py` | `core/message.py` | - |
-| 阶段三 | `core/feishu_client.py`<br>`tests/test_feishu_client.py`<br>`tests/test_feishu_integration.py` | - | - |
-| 阶段四 | `tests/test_main_integration.py` | `main.py`<br>`requirements.txt`<br>`config-example.yaml` | `core/webhook_server.py`（可选） |
-| 阶段五 | `tests/test_e2e_feishu.py`<br>`doc/FEISHU_SETUP_GUIDE.md` | `README.md` | - |
-
----
-
-## 关键配置示例
-
+#### 配置需求
 ```yaml
-# config.yaml 飞书配置部分
+message:
+  platform: "feishu"
+  feishu:
+    my_open_id: "ou_xxxxxxxxxxxxxxxx"  # 用于验证消息来源
+```
+
+---
+
+### MVP-1：Postman→Webhook→真实发送到飞书
+
+#### 目标
+在MVP-0基础上，实现真实发送消息到飞书。
+
+#### 涉及文件
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `core/feishu_messenger.py` | 新增 | 飞书Bot API发送模块 |
+| `core/message.py` | 修改 | 调用feishu_messenger发送 |
+| `config.yaml` | 修改 | 添加app_id和app_secret |
+
+#### 核心逻辑
+```
+Postman ──POST /webhook──→ webhook_server.py
+                                ↓
+                        feishu_handler.parse_event()
+                                ↓
+                        feishu_handler.handle_message()
+                                ↓
+                        debounce → llm.chat()
+                                ↓
+                        message.send_text()
+                                ↓
+                        feishu_messenger.send_text() (真实发送)
+                                ↓
+                        飞书服务器 → 你的手机收到消息
+```
+
+#### 验证标准
+- [ ] Postman发送测试消息
+- [ ] 手机飞书收到AI回复
+- [ ] 控制台能看到发送成功日志
+- [ ] 发送失败时抛出异常
+
+#### 配置需求
+```yaml
 message:
   platform: "feishu"
   feishu:
     app_id: "cli_xxxxxxxxxxxx"
     app_secret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-    domain: "feishu"  # 或 "lark"
-
-owner_ids:
-  - "ou_xxxxxxxxxxxxxxxx"  # 你的飞书open_id
+    my_open_id: "ou_xxxxxxxxxxxxxxxx"
 ```
+
+#### 依赖安装
+```bash
+pip install lark-oapi
+```
+
+---
+
+### MVP-2：飞书→WebSocket→Console
+
+#### 目标
+实现WebSocket长连接，接收真实飞书消息，输出到控制台。
+
+#### 涉及文件
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `core/feishu_ws_client.py` | 新增 | WebSocket客户端 |
+| `main.py` | 修改 | 启动时初始化WebSocket连接 |
+| `config.yaml` | 修改 | 确认配置完整 |
+
+#### 核心逻辑
+```
+你(飞书) ──发送消息──→ 飞书服务器
+                            ↓
+                    WebSocket推送
+                            ↓
+                    feishu_ws_client (长连接)
+                            ↓
+                    feishu_handler.parse_event() (复用MVP-0)
+                            ↓
+                    feishu_handler.handle_message() (复用MVP-0)
+                            ↓
+                    debounce → llm.chat()
+                            ↓
+                    message.send_text() → logger.info() (仅控制台)
+```
+
+#### 飞书应用配置
+1. 访问 [飞书开放平台](https://open.feishu.cn/app)
+2. 创建企业自建应用
+3. 开启机器人能力
+4. 权限管理开通：
+   - `im:message`
+   - `im:message.p2p_msg:readonly`
+   - `im:message.group_at_msg:readonly`
+5. 事件订阅选择"使用长连接接收事件"
+6. 添加事件：`im.message.receive_v1`
+7. 发布应用
+
+#### 验证标准
+- [ ] 启动服务后WebSocket连接成功
+- [ ] 在飞书向机器人发送消息
+- [ ] 控制台能看到接收到的消息
+- [ ] 能看到LLM生成的回复（仅控制台，不发送）
+
+---
+
+### MVP-3：飞书→WebSocket→真实回复到飞书
+
+#### 目标
+在MVP-2基础上，实现真实回复到飞书。
+
+#### 涉及文件
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `core/message.py` | 修改 | 启用真实发送（复用MVP-1的feishu_messenger） |
+| `config.yaml` | 可选修改 | 如有需要调整配置 |
+
+#### 核心逻辑
+```
+你(飞书) ──发送消息──→ 飞书服务器
+                            ↓
+                    WebSocket推送
+                            ↓
+                    feishu_ws_client
+                            ↓
+                    feishu_handler.parse_event()
+                            ↓
+                    feishu_handler.handle_message()
+                            ↓
+                    debounce → llm.chat()
+                            ↓
+                    message.send_text()
+                            ↓
+                    feishu_messenger.send_text() (真实发送)
+                            ↓
+                    飞书服务器 → 你收到AI回复
+```
+
+#### 验证标准
+- [ ] 在飞书向机器人发送消息
+- [ ] 飞书收到AI回复
+- [ ] 控制台能看到完整流程日志
+- [ ] 异常时抛出明确错误
+
+---
+
+## 3. 文件变更总览
+
+| 阶段 | 新增文件 | 修改文件 |
+|------|---------|---------|
+| MVP-0 | `core/feishu_handler.py` | `core/webhook_server.py`<br>`core/message.py` |
+| MVP-1 | `core/feishu_messenger.py` | `core/message.py`<br>`config.yaml` |
+| MVP-2 | `core/feishu_ws_client.py` | `main.py`<br>`config.yaml` |
+| MVP-3 | - | `core/message.py` |
+
+---
+
+## 4. 配置演进
+
+### MVP-0 配置
+```yaml
+message:
+  platform: "feishu"
+  feishu:
+    my_open_id: "ou_xxxxxxxxxxxxxxxx"
+```
+
+### MVP-1 配置
+```yaml
+message:
+  platform: "feishu"
+  feishu:
+    app_id: "cli_xxxxxxxxxxxx"
+    app_secret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    my_open_id: "ou_xxxxxxxxxxxxxxxx"
+```
+
+### MVP-2/3 配置
+与MVP-1相同，无需新增配置。
+
+---
+
+## 5. 关键模块职责
+
+### feishu_handler.py
+```python
+def parse_event(event_json: dict) -> tuple[str, str, str]:
+    """
+    解析飞书事件JSON
+    
+    Returns:
+        (open_id, text, chat_type)
+    """
+
+def handle_message(open_id: str, text: str, chat_type: str = "p2p"):
+    """
+    处理飞书消息的统一入口
+    调用debounce → llm → message.send_text
+    """
+```
+
+### feishu_messenger.py
+```python
+def init(config: dict):
+    """初始化飞书客户端"""
+
+def send_text(open_id: str, content: str) -> bool:
+    """
+    发送文本消息到飞书用户
+    失败时抛出异常
+    """
+```
+
+### feishu_ws_client.py
+```python
+def init(config: dict, message_handler: callable):
+    """
+    初始化WebSocket连接
+    
+    Args:
+        config: 飞书配置
+        message_handler: 消息处理回调函数
+    """
+
+def start():
+    """在后台线程启动WebSocket连接"""
+
+def stop():
+    """优雅关闭WebSocket连接"""
+```
+
+---
+
+## 6. 测试策略
+
+### 单元测试
+每个模块提供独立的单元测试：
+- `tests/test_feishu_handler.py` - 解析逻辑测试
+- `tests/test_feishu_messenger.py` - 发送逻辑测试（Mock）
+- `tests/test_feishu_ws_client.py` - 连接逻辑测试
+
+### 集成测试
+- MVP-0/1：使用Postman发送请求验证
+- MVP-2/3：使用真实飞书应用验证
+
+### 日志检查
+所有阶段都需要验证日志输出：
+```
+[时间] [模块名] 关键信息
+[时间] [模块名] 关键信息
+...
+```
+
+---
+
+## 7. 风险与应对
+
+| 风险 | 应对 |
+|------|------|
+| WebSocket连接不稳定 | SDK自动重连，日志记录 |
+| 飞书API限流 | 异常抛出，人工处理 |
+| 消息格式解析失败 | 详细日志，快速定位 |
+| 配置错误 | 启动时校验，明确报错 |
+
+---
+
+## 8. 后续扩展（可选）
+
+- 支持群聊@消息
+- 支持图片/文件消息
+- 支持消息卡片
+- 支持多平台（钉钉、企业微信）
 
 ---
 
